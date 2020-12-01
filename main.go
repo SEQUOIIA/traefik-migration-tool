@@ -63,7 +63,11 @@ func main() {
 			}
 
 			//try build service port name and port mapping
-			serviceIndex, _ = service.BuildIndex(ingressCfg.service)
+			sIndex, err := service.BuildIndex(ingressCfg.service)
+			if err != nil {
+				log.Fatal(err)
+			}
+			serviceIndex = sIndex
 
 			info, err := os.Stat(ingressCfg.output)
 			if err != nil {
