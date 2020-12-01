@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/traefik/traefik-migration-tool/service"
 	"github.com/traefik/traefik/v2/pkg/provider/kubernetes/crd/traefik/v1alpha1"
 	extensions "k8s.io/api/extensions/v1beta1"
 	networking "k8s.io/api/networking/v1beta1"
@@ -33,8 +34,8 @@ const (
 	ruleTypeReplacePathRegex = "ReplacePathRegex"
 )
 
-// Convert converts all ingress in a src into a dstDir.
-func Convert(src, dstDir string) error {
+// Convert converts all ingress in a src into a dstDir
+func Convert(src, dstDir string, serviceIndex *service.NamePortMapping) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -43,7 +44,7 @@ func Convert(src, dstDir string) error {
 	if !info.IsDir() {
 		filename := info.Name()
 		srcPath := filepath.Dir(src)
-		return convertFile(srcPath, dstDir, filename)
+		return convertFile(srcPath, dstDir, filename, serviceIndex)
 	}
 
 	dir := info.Name()
@@ -55,7 +56,7 @@ func Convert(src, dstDir string) error {
 	for _, info := range infos {
 		newSrc := filepath.Join(src, info.Name())
 		newDst := filepath.Join(dstDir, dir)
-		err := Convert(newSrc, newDst)
+		err := Convert(newSrc, newDst, serviceIndex)
 		if err != nil {
 			return err
 		}
@@ -63,8 +64,8 @@ func Convert(src, dstDir string) error {
 	return nil
 }
 
-func convertFile(srcDir, dstDir, filename string) error {
-	content, err := expandFileContent(filepath.Join(srcDir, filename))
+func convertFile(srcDir, dstDir, filename string, serviceIndex *service.NamePortMapping) error {
+	content, err := ioutil.ReadFile(filepath.Join(srcDir, filename))
 	if err != nil {
 		return err
 	}
@@ -113,7 +114,7 @@ func convertFile(srcDir, dstDir, filename string) error {
 			continue
 		}
 
-		objects := convertIngress(ingress)
+		objects := convertIngress(ingress, serviceIndex)
 		for _, object := range objects {
 			yml, err := encodeYaml(object, v1alpha1.GroupName+groupSuffix)
 			if err != nil {
@@ -215,8 +216,8 @@ func extractItems(items []interface{}) ([]interface{}, []unstructured.Unstructur
 	return toKeep, toConvert
 }
 
-// convertIngress converts an *networking.Ingress to a slice of runtime.Object (IngressRoute and Middlewares).
-func convertIngress(ingress *networking.Ingress) []runtime.Object {
+// convertIngress converts an *networking.Ingress to a slice of runtime.Object (IngressRoute and Middlewares)
+func convertIngress(ingress *networking.Ingress, serviceIndex *service.NamePortMapping) []runtime.Object {
 	logUnsupported(ingress)
 
 	ingressRoute := &v1alpha1.IngressRoute{
@@ -275,7 +276,7 @@ func convertIngress(ingress *networking.Ingress) []runtime.Object {
 		miRefs = append(miRefs, toRef(mi))
 	}
 
-	routes, mi, err := createRoutes(ingress.GetNamespace(), ingress.Spec.Rules, ingress.GetAnnotations(), miRefs)
+	routes, mi, err := createRoutes(ingress.GetNamespace(), ingress.Spec.Rules, ingress.GetAnnotations(), miRefs, serviceIndex)
 	if err != nil {
 		log.Println(err)
 		return nil
@@ -294,7 +295,7 @@ func convertIngress(ingress *networking.Ingress) []runtime.Object {
 	return objects
 }
 
-func createRoutes(namespace string, rules []networking.IngressRule, annotations map[string]string, middlewareRefs []v1alpha1.MiddlewareRef) ([]v1alpha1.Route, []*v1alpha1.Middleware, error) {
+func createRoutes(namespace string, rules []networking.IngressRule, annotations map[string]string, middlewareRefs []v1alpha1.MiddlewareRef, serviceIndex *service.NamePortMapping) ([]v1alpha1.Route, []*v1alpha1.Middleware, error) {
 	ruleType, stripPrefix, err := extractRuleType(annotations)
 	if err != nil {
 		return nil, nil, err
@@ -345,6 +346,15 @@ func createRoutes(namespace string, rules []networking.IngressRule, annotations 
 			if len(rules) > 0 {
 				sort.Slice(miRefs, func(i, j int) bool { return miRefs[i].Name < miRefs[j].Name })
 
+				var port int32
+				var err error
+				if path.Backend.ServicePort.Type == 1 {
+					port, err = serviceIndex.GetServicePortWithName(namespace, path.Backend.ServiceName, path.Backend.ServicePort.StrVal)
+					_ = err
+				} else {
+					port = path.Backend.ServicePort.IntVal
+				}
+
 				routes = append(routes, v1alpha1.Route{
 					Match:    strings.Join(rules, " && "),
 					Kind:     "Rule",
@@ -356,7 +366,7 @@ func createRoutes(namespace string, rules []networking.IngressRule, annotations 
 								Namespace: namespace,
 								Kind:      "Service",
 								// TODO pas de port en string dans ingressRoute ?
-								Port:   path.Backend.ServicePort.IntVal,
+								Port:   port,
 								Scheme: getStringValue(annotations, annotationKubernetesProtocol, ""),
 							},
 						},

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/traefik/traefik-migration-tool/service"
 	"github.com/traefik/traefik/v2/pkg/provider/kubernetes/crd/traefik/v1alpha1"
 	networking "k8s.io/api/networking/v1beta1"
 )
@@ -77,6 +78,10 @@ func Test_convertIngress(t *testing.T) {
 			objectCount: 3,
 		},
 		{
+			ingressFile: "ingress_with_service.yml",
+			objectCount: 1,
+		},
+		{
 			ingressFile: "ingress_with_request_modifier.yml",
 			objectCount: 2,
 		},
@@ -96,7 +101,21 @@ func Test_convertIngress(t *testing.T) {
 			objectIngress, err := parseYaml(bytes)
 			require.NoError(t, err)
 
-			objects := convertIngress(objectIngress.(*networking.Ingress))
+			var (
+				testNamespace          = "testing"
+				testService            = "test"
+				testServicePortmapping = make(map[string]int32)
+			)
+			testServicePortmapping["http"] = 80
+
+			var snp *service.NamePortMapping
+			snp, err = service.NewNamePortMapping()
+			require.NoError(t, err)
+
+			err = snp.AddNamePortMapping(testNamespace, testService, testServicePortmapping)
+			require.NoError(t, err)
+
+			objects := convertIngress(objectIngress.(*networking.Ingress), snp)
 
 			if !*updateExpected {
 				require.Len(t, objects, test.objectCount)
@@ -208,9 +227,19 @@ func Test_convertFile(t *testing.T) {
 		require.NoError(t, os.MkdirAll(fixturesDir, 0755))
 	}
 
+	var (
+		testNamespace          = "testing"
+		testService            = "test"
+		testServicePortmapping = make(map[string]int32)
+	)
+	testServicePortmapping["http"] = 80
+
+	snp, _ := service.NewNamePortMapping()
+	_ = snp.AddNamePortMapping(testNamespace, testService, testServicePortmapping)
+
 	for _, test := range testCases {
 		t.Run(test.ingressFile, func(t *testing.T) {
-			err := convertFile(filepath.Join("fixtures", "input"), tempDir, test.ingressFile)
+			err := convertFile(filepath.Join("fixtures", "input"), tempDir, test.ingressFile, snp)
 			require.NoError(t, err)
 
 			require.FileExists(t, filepath.Join(tempDir, test.ingressFile))
